@@ -23,7 +23,7 @@ from sglang.srt.runtime_context import get_server_args
 
 @dataclass
 class ExpertLocationDispatchInfo:
-    ep_dispatch_algorithm: Literal["static", "random"]
+    ep_dispatch_algorithm: Literal["static", "round_robin", "dynamic", "fake", "lp"]
     # (num_logical_experts,)
     partial_logical_to_rank_dispatch_physical_map: Optional[torch.Tensor]
     # (num_logical_experts, X)
@@ -83,6 +83,8 @@ def topk_ids_logical_to_physical(
 
     if info.ep_dispatch_algorithm == "static":
         return _topk_ids_logical_to_physical_static(topk_ids, info)
+    if info.ep_dispatch_algorithm == "round_robin":
+        return _topk_ids_logical_to_physical_round_robin(topk_ids, info)
     if info.ep_dispatch_algorithm in ["dynamic", "fake"]:
         return _topk_ids_logical_to_physical_dynamic(topk_ids, info)
     if info.ep_dispatch_algorithm == "lp":
@@ -101,6 +103,39 @@ def _topk_ids_logical_to_physical_static(
     physical_topk_ids = info.partial_logical_to_rank_dispatch_physical_map[topk_ids]
     if physical_topk_ids.dtype != topk_ids.dtype:
         physical_topk_ids = physical_topk_ids.to(topk_ids.dtype)
+    return physical_topk_ids
+
+
+def _topk_ids_logical_to_physical_round_robin(
+    topk_ids: torch.Tensor, info: ExpertLocationDispatchInfo
+) -> torch.Tensor:
+    """Pick replica ``row_index % num_valid`` for every (token, logical expert).
+
+    Unlike "static" (which prefers the replica living on the *current* rank) and
+    "dynamic" (which draws a random replica), this is a pure function of the
+    token's row index, so every EP rank derives the same physical expert for the
+    same token. That is mandatory without an a2a dispatch: there, all EP ranks
+    run the MoE over the same tokens and their partial outputs are summed, so a
+    rank-dependent choice makes a replicated logical expert run on several ranks
+    and get counted several times.
+
+    Keying on the row index also spreads a hot logical expert's tokens evenly
+    over its replicas, which is exactly the load split EPLB's placement solver
+    assumes when it hands out redundant experts.
+    """
+    original_dtype = topk_ids.dtype
+
+    num_valid = info.partial_logical_to_all_physical_map_num_valid[topk_ids]
+    row_index = torch.arange(
+        topk_ids.shape[0], dtype=num_valid.dtype, device=topk_ids.device
+    ).view(-1, *([1] * (topk_ids.dim() - 1)))
+    chosen_dispatch_index = row_index % num_valid
+
+    physical_topk_ids = info.partial_logical_to_all_physical_map[
+        topk_ids, chosen_dispatch_index
+    ]
+    if physical_topk_ids.dtype != original_dtype:
+        physical_topk_ids = physical_topk_ids.to(original_dtype)
     return physical_topk_ids
 
 

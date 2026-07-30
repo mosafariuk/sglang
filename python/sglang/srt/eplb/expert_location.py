@@ -38,6 +38,17 @@ def _prefer_same_node_experts(server_args: ServerArgs) -> bool:
     return server_args.ep_join_mode != "scale" and not elastic_expanded_world_enabled()
 
 
+def _dispatch_must_be_rank_invariant(server_args: ServerArgs) -> bool:
+    """Whether every rank must derive the same physical expert for a token.
+
+    Required when there is no a2a backend: all EP ranks then run the MoE over the
+    same tokens and their partial outputs are summed, so a rank-dependent choice
+    makes a replicated logical expert run on several ranks and be counted several
+    times. `_handle_eplb_and_dispatch` selects `round_robin` exactly in that case.
+    """
+    return server_args.ep_dispatch_algorithm == "round_robin"
+
+
 def _compute_elastic_expert_layout(
     base_num_physical_experts: int,
     initial_ep_size: int,
@@ -560,8 +571,12 @@ def _compute_logical_to_all_physical_map(
                 physical_expert_id
             )
 
-    # Replace by the physical expert on local GPU or node if possible
-    if moe_ep_rank is not None:
+    # Replace by the physical expert on local GPU or node if possible. Collapsing
+    # to the nearest replica makes this map rank-dependent, so it must not run
+    # when the logical->physical choice has to agree across ranks; there the full
+    # candidate list is also what lets round_robin spread a hot expert's tokens
+    # over all of its replicas.
+    if moe_ep_rank is not None and not _dispatch_must_be_rank_invariant(server_args):
         num_local_gpu_physical_experts = num_physical_experts // ep_size
         prefer_same_node = _prefer_same_node_experts(server_args)
         num_gpus_per_node = (

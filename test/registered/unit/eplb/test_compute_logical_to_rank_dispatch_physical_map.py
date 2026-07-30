@@ -17,9 +17,14 @@ from sglang.srt.eplb.expert_location import (
 from sglang.test.test_utils import CustomTestCase
 
 
-def _make_server_args(ep_size: int, nnodes: int):
+def _make_server_args(ep_size: int, nnodes: int, ep_dispatch_algorithm=None):
     """Minimal server_args stub for expert placement tests."""
-    return types.SimpleNamespace(ep_size=ep_size, nnodes=nnodes, ep_join_mode=None)
+    return types.SimpleNamespace(
+        ep_size=ep_size,
+        nnodes=nnodes,
+        ep_join_mode=None,
+        ep_dispatch_algorithm=ep_dispatch_algorithm,
+    )
 
 
 def _make_logical_to_all_physical_map(

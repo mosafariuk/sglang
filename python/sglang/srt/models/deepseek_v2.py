@@ -937,10 +937,12 @@ class DeepseekV2MoE(nn.Module):
         has_shared_output = (
             hidden_states.shape[0] > 0 and self.num_fused_shared_experts == 0
         )
-        server_args = get_server_args()
+        # Matches forward_deepep: init_new() already returns None unless a
+        # logical->physical mapping exists, so gating on enable_eplb would skip
+        # the remap for --ep-num-redundant-experts / --init-expert-location.
         dispatch_info = (
             ExpertLocationDispatchInfo.init_new(layer_id=self.layer_id)
-            if server_args.enable_eplb and not self.is_nextn
+            if not self.is_nextn
             else None
         )
         # router_logits: (num_tokens, n_experts)
@@ -1032,10 +1034,12 @@ class DeepseekV2MoE(nn.Module):
             self.shared_experts.gate_up_proj
         ):
             return self.forward_cpu(hidden_states)
-        server_args = get_server_args()
+        # Matches forward_deepep: init_new() already returns None unless a
+        # logical->physical mapping exists, so gating on enable_eplb would skip
+        # the remap for --ep-num-redundant-experts / --init-expert-location.
         dispatch_info = (
             ExpertLocationDispatchInfo.init_new(layer_id=self.layer_id)
-            if server_args.enable_eplb and not self.is_nextn
+            if not self.is_nextn
             else None
         )
         defer_shared = not self.experts.moe_runner_config.inplace

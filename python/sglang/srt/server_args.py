@@ -2296,8 +2296,10 @@ class ServerArgs:
         NS("exec.moe"),
     ] = 0
     ep_dispatch_algorithm: A[
-        Optional[Literal["static", "dynamic", "fake", "lp"]],
-        "The algorithm to choose ranks for redundant experts in expert parallel.",
+        Optional[Literal["static", "round_robin", "dynamic", "fake", "lp"]],
+        "The algorithm to choose ranks for redundant experts in expert parallel. "
+        "Only `round_robin` gives every rank the same choice, so it is the only "
+        "one usable without an a2a backend (--moe-a2a-backend none).",
         NS("exec.moe"),
     ] = None
     init_expert_location: A[str, "Initial location of EP experts.", NS("exec.moe")] = (
@@ -6632,16 +6634,42 @@ class ServerArgs:
         return self.chunked_prefill_size
 
     def _handle_eplb_and_dispatch(self):
+        from sglang.srt.arg_groups.overrides import resolved_view
+
         if self.enable_eplb and (self.expert_distribution_recorder_mode is None):
             self.expert_distribution_recorder_mode = "stat"
             logger.warning(
                 "EPLB is enabled. The expert_distribution_recorder_mode is automatically set."
             )
 
+        # Without an a2a backend every EP rank runs the MoE over the *same*
+        # tokens and only owns a slice of the experts, so the partial outputs are
+        # summed. The logical->physical choice must therefore be identical on
+        # every rank: a rank-dependent one makes a replicated logical expert run
+        # on several ranks and get summed several times (silently wrong output).
+        needs_rank_invariant_dispatch = (
+            resolved_view(self).moe_a2a_backend == "none"
+            and self._resolved().ep_size > 1
+        )
+
         if (self.enable_eplb or (self.init_expert_location != "trivial")) and (
             self.ep_dispatch_algorithm is None
         ):
-            self.ep_dispatch_algorithm = "static"
+            self.ep_dispatch_algorithm = (
+                "round_robin" if needs_rank_invariant_dispatch else "static"
+            )
+
+        if needs_rank_invariant_dispatch and self.ep_dispatch_algorithm not in (
+            None,
+            "round_robin",
+        ):
+            raise ValueError(
+                f"--ep-dispatch-algorithm {self.ep_dispatch_algorithm} chooses a "
+                "different physical replica per rank, which double-counts "
+                "replicated experts when there is no a2a backend. Use "
+                "--ep-dispatch-algorithm round_robin with "
+                "--moe-a2a-backend none."
+            )
 
         if self.enable_eplb and self.ep_join_mode != "scale":
             assert self._resolved().ep_size > 1
